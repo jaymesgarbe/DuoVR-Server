@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  duovr-server:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env
+    volumes:
+      - ./service-account-key.json:/app/service-account-key.json:ro
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: duovr_db
+      POSTGRES_USER: duovr_user
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # Optional: Cloud SQL Proxy for development
+  cloudsql-proxy:
+    image: gcr.io/cloudsql-docker/gce-proxy:1.33.2
+    command: /cloud_sql_proxy -instances=YOUR_PROJECT:REGION:INSTANCE=tcp:0.0.0.0:5432 -credential_file=/config/service-account-key.json
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./service-account-key.json:/config/service-account-key.json:ro
+    profiles:
+      - cloudsql
+
+volumes:
+  postgres_data:
