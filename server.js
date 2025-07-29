@@ -15,9 +15,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// File upload middleware with larger limits for video files
+// File upload middleware with large limits for video files
 app.use(fileUpload({
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max file size for videos
+  limits: { fileSize: 32 * 1024 * 1024 * 1024 }, // 32GB max file size for videos
   useTempFiles: true,
   tempFileDir: '/tmp/',
   createParentPath: true
@@ -276,12 +276,12 @@ app.post('/files/upload', async (req, res) => {
       });
     }
 
-    // Check file size (max 500MB)
-    const maxSize = 500 * 1024 * 1024; // 500MB
+    // Check file size (max 32GB)
+    const maxSize = 32 * 1024 * 1024 * 1024; // 32GB
     if (file.size > maxSize) {
       console.log(`❌ File too large: ${file.size} bytes`);
       return res.status(400).json({ 
-        error: 'File too large. Maximum size is 500MB' 
+        error: 'File too large. Maximum size is 32GB' 
       });
     }
 
@@ -338,4 +338,235 @@ app.post('/files/upload', async (req, res) => {
 app.get('/files/:fileName/signed-url', async (req, res) => {
   try {
     const { fileName } = req.params;
-    const { expiresInMinutes = 60
+    const { expiresInMinutes = 60, action = 'read' } = req.query;
+
+    console.log(`🔍 Checking if file exists: ${fileName} in bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME}`);
+
+    // Check if file exists
+    const exists = await storageService.fileExists(fileName);
+    if (!exists) {
+      console.log(`❌ File not found: ${fileName}`);
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    console.log(`✅ File found: ${fileName}, generating signed URL`);
+
+    const signedUrl = await storageService.generateSignedUrl(fileName, {
+      action,
+      expiresInMinutes: parseInt(expiresInMinutes),
+    });
+
+    console.log(`✅ Signed URL generated successfully for: ${fileName}`);
+
+    res.json({ 
+      signedUrl,
+      fileName,
+      expiresIn: `${expiresInMinutes} minutes`,
+      action
+    });
+  } catch (error) {
+    console.error('❌ Error generating signed URL:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List files in bucket
+app.get('/files', async (req, res) => {
+  try {
+    const { prefix } = req.query;
+    const files = await storageService.listFiles(prefix);
+    
+    // Also get metadata from database if available
+    let dbFiles = [];
+    if (FileMetadata) {
+      try {
+        dbFiles = await FileMetadata.findAll({
+          order: [['uploadedAt', 'DESC']],
+        });
+      } catch (dbError) {
+        console.error('⚠️ Failed to fetch from database:', dbError);
+      }
+    }
+
+    res.json({
+      bucketFiles: files,
+      databaseFiles: dbFiles,
+      totalFiles: files.length
+    });
+  } catch (error) {
+    console.error('Error listing files:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete file
+app.delete('/files/:fileName', async (req, res) => {
+  try {
+    const { fileName } = req.params;
+
+    await storageService.deleteFile(fileName);
+    
+    // Remove from database if available
+    if (FileMetadata) {
+      try {
+        await FileMetadata.destroy({
+          where: { fileName }
+        });
+      } catch (dbError) {
+        console.error('⚠️ Failed to delete from database:', dbError);
+      }
+    }
+
+    res.json({ message: `File ${fileName} deleted successfully` });
+  } catch (error) {
+    console.error('Error deleting file:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Database operations (only if database is configured)
+app.get('/db/files', async (req, res) => {
+  if (!FileMetadata) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  
+  try {
+    const files = await FileMetadata.findAll({
+      order: [['uploadedAt', 'DESC']],
+    });
+    res.json(files);
+  } catch (error) {
+    console.error('Error fetching files from database:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get file metadata by ID
+app.get('/db/files/:id', async (req, res) => {
+  if (!FileMetadata) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  
+  try {
+    const file = await FileMetadata.findByPk(req.params.id);
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    res.json(file);
+  } catch (error) {
+    console.error('Error fetching file:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Bulk signed URL generation
+app.post('/files/bulk-signed-urls', async (req, res) => {
+  try {
+    const { fileNames, expiresInMinutes = 60, action = 'read' } = req.body;
+
+    if (!Array.isArray(fileNames)) {
+      return res.status(400).json({ error: 'fileNames must be an array' });
+    }
+
+    const results = await Promise.allSettled(
+      fileNames.map(async (fileName) => {
+        const exists = await storageService.fileExists(fileName);
+        if (!exists) {
+          throw new Error(`File ${fileName} not found`);
+        }
+        
+        const signedUrl = await storageService.generateSignedUrl(fileName, {
+          action,
+          expiresInMinutes: parseInt(expiresInMinutes),
+        });
+        
+        return { fileName, signedUrl };
+      })
+    );
+
+    const successful = results
+      .filter(result => result.status === 'fulfilled')
+      .map(result => result.value);
+      
+    const failed = results
+      .filter(result => result.status === 'rejected')
+      .map((result, index) => ({
+        fileName: fileNames[index],
+        error: result.reason.message
+      }));
+
+    res.json({
+      successful,
+      failed,
+      summary: {
+        total: fileNames.length,
+        successful: successful.length,
+        failed: failed.length
+      }
+    });
+  } catch (error) {
+    console.error('Error generating bulk signed URLs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'development' ? error.message : undefined
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Start server
+async function startServer() {
+  try {
+    // Only try database connection if properly configured
+    if (sequelize) {
+      console.log('🔍 Testing database connection...');
+      await testDatabaseConnection();
+      await sequelize.sync({ alter: true });
+      console.log('📊 Database models synchronized');
+    } else {
+      console.log('⚠️ No database configured, running without database features');
+    }
+    
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 DuoVR Server running on port ${PORT}`);
+      console.log(`📱 Health check: http://localhost:${PORT}/health`);
+      console.log(`🪣 Using bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME || 'not configured'}`);
+      console.log(`📏 Max file size: 32GB`);
+    });
+  } catch (error) {
+    console.error('❌ Database connection failed, but starting server anyway:', error.message);
+    
+    // Start server without database
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 DuoVR Server running on port ${PORT} (database connection failed)`);
+      console.log(`📱 Health check: http://localhost:${PORT}/health`);
+      console.log(`🪣 Using bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME || 'not configured'}`);
+      console.log(`📏 Max file size: 32GB`);
+    });
+  }
+}
+
+startServer();
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Received SIGINT, shutting down gracefully...');
+  if (sequelize) await sequelize.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
+  if (sequelize) await sequelize.close();
+  process.exit(0);
+});
