@@ -394,20 +394,28 @@ app.use((req, res) => {
 // Start server
 async function startServer() {
   try {
-    // Test database connection
-    await testDatabaseConnection();
+    // Only try database connection if DB_HOST is provided
+    if (process.env.DB_HOST && process.env.DB_HOST !== '') {
+      console.log('🔍 Testing database connection...');
+      await testDatabaseConnection();
+      await sequelize.sync({ alter: true });
+      console.log('📊 Database models synchronized');
+    } else {
+      console.log('⚠️ No database configured, skipping database setup');
+    }
     
-    // Sync database models
-    await sequelize.sync({ alter: true });
-    console.log('📊 Database models synchronized');
-    
-    app.listen(PORT, () => {
+    app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 DuoVR Server running on port ${PORT}`);
       console.log(`📱 Health check: http://localhost:${PORT}/health`);
     });
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
+    console.error('❌ Database connection failed, but starting server anyway:', error.message);
+    
+    // Start server without database
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 DuoVR Server running on port ${PORT} (without database)`);
+      console.log(`📱 Health check: http://localhost:${PORT}/health`);
+    });
   }
 }
 

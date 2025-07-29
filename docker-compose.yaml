@@ -10,7 +10,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./service-account-key.json:/app/service-account-key.json:ro
+      - ./secrets/service-account-key.json:/app/service-account-key.json:ro
     depends_on:
       - postgres
     restart: unless-stopped
