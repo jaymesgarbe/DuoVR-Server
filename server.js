@@ -4,6 +4,7 @@ const { Sequelize } = require('sequelize');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const fileUpload = require('express-fileupload');
 require('dotenv').config();
 
 const app = express();
@@ -14,6 +15,11 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// File upload middleware
+app.use(fileUpload({
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max file size
+}));
 
 // Rate limiting
 const limiter = rateLimit({
@@ -30,12 +36,12 @@ const storage = new Storage({
 
 // Initialize Google Cloud SQL connection
 const sequelize = new Sequelize({
-  database: process.env.DB_NAME,
-  username: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  host: process.env.DB_HOST,
+  database: process.env.DB_NAME || 'duovr_db',
+  username: process.env.DB_USER || 'duovr_user',
+  password: process.env.DB_PASSWORD || 'secure_password',
+  host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 5432,
-  dialect: 'postgres', // or 'mysql' depending on your setup
+  dialect: 'postgres',
   dialectOptions: {
     socketPath: process.env.DB_SOCKET_PATH, // For Cloud SQL proxy
   },
@@ -107,7 +113,7 @@ class CloudStorageService {
         blobStream.on('finish', () => {
           resolve(`File ${destination} uploaded successfully`);
         });
-        blobStream.end(file.buffer);
+        blobStream.end(file.data); // Changed from file.buffer to file.data for express-fileupload
       });
     } catch (error) {
       throw new Error(`Upload failed: ${error.message}`);
@@ -166,7 +172,7 @@ class CloudStorageService {
 }
 
 // Initialize storage service
-const storageService = new CloudStorageService(process.env.GOOGLE_CLOUD_BUCKET_NAME);
+const storageService = new CloudStorageService(process.env.GOOGLE_CLOUD_BUCKET_NAME || 'default-bucket');
 
 // Routes
 
