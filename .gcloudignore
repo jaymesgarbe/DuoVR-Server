@@ -1,0 +1,31 @@
+# Ignore VSCode files
+.vscode/
+.vscode/**
+
+# Ignore development files
+node_modules/
+.git/
+.gitignore
+*.log
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore editor files
+*.swp
+*.swo
+*~
+
+# Ignore build artifacts
+dist/
+build/
+
+# Ignore service account keys (for security)
+service-account-key.json
+secrets/

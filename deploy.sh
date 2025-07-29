@@ -4,9 +4,9 @@
 set -e
 
 # Configuration - UPDATE THESE VALUES
-PROJECT_ID=""  # Leave empty to use current gcloud project, or set your project ID
+PROJECT_ID="plated-envoy-463521-d0"  # Leave empty to use current gcloud project, or set your project ID
 SERVICE_NAME="duovr-server"
-REGION="us-central1"  # Change if you prefer a different region
+REGION="us-west1"  # Change if you prefer a different region
 
 echo "🚀 Starting deployment of DuoVR Server..."
 
