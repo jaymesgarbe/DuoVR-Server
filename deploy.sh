@@ -4,12 +4,38 @@
 set -e
 
 # Configuration - UPDATE THESE VALUES
-PROJECT_ID="plated-envoy-463521-d0"  # Replace with your actual Google Cloud Project ID
+PROJECT_ID=""  # Leave empty to use current gcloud project, or set your project ID
 SERVICE_NAME="duovr-server"
-REGION="us-west1"  # Change if you prefer a different region
-IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+REGION="us-central1"  # Change if you prefer a different region
 
 echo "🚀 Starting deployment of DuoVR Server..."
+
+# Get current project if not specified
+if [ -z "$PROJECT_ID" ]; then
+    PROJECT_ID=$(gcloud config get-value project)
+    if [ -z "$PROJECT_ID" ]; then
+        echo "❌ No project ID specified and no default project set."
+        echo "Please run: gcloud config set project YOUR_PROJECT_ID"
+        echo "Or set PROJECT_ID in this script."
+        exit 1
+    fi
+fi
+
+IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+
+echo "📋 Using project: $PROJECT_ID"
+echo "📋 Using account: $(gcloud config get-value account)"
+
+# Verify project exists and is accessible
+echo "🔍 Verifying project access..."
+if ! gcloud projects describe $PROJECT_ID >/dev/null 2>&1; then
+    echo "❌ Cannot access project: $PROJECT_ID"
+    echo "Available projects:"
+    gcloud projects list
+    exit 1
+fi
+
+echo "✅ Project access verified"
 
 # Check if Dockerfile exists
 if [ ! -f "Dockerfile" ]; then
