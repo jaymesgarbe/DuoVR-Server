@@ -267,8 +267,83 @@ app.get('/', (req, res) => {
   });
 });
 
-// Upload file to bucket
-app.post('/files/upload', async (req, res) => {
+// Generate signed upload URL for direct browser upload
+app.post('/files/generate-upload-url', async (req, res) => {
+  try {
+    const { fileName, fileType, fileSize } = req.body;
+
+    if (!fileName || !fileType) {
+      return res.status(400).json({ error: 'fileName and fileType are required' });
+    }
+
+    // Validate file type
+    const validTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/avi'];
+    if (!validTypes.includes(fileType.toLowerCase())) {
+      return res.status(400).json({ 
+        error: 'Invalid file type. Please upload video files only (MP4, MOV, AVI)' 
+      });
+    }
+
+    // Check file size (max 4GB for direct uploads)
+    const maxSize = 4 * 1024 * 1024 * 1024; // 4GB
+    if (fileSize && fileSize > maxSize) {
+      return res.status(400).json({ 
+        error: 'File too large. Maximum size is 4GB for direct uploads' 
+      });
+    }
+
+    // Generate unique file name
+    const destination = generateUniqueFileName(fileName);
+    console.log(`🎯 Generated upload destination: ${destination}`);
+
+    // Generate signed upload URL
+    const file = storageService.bucket.file(destination);
+    const [signedUrl] = await file.getSignedUrl({
+      version: 'v4',
+      action: 'write',
+      expires: Date.now() + 60 * 60 * 1000, // 1 hour
+      contentType: fileType,
+      extensionHeaders: {
+        'x-goog-content-length-range': '0,4294967296' // 0 to 4GB
+      }
+    });
+
+    console.log(`✅ Generated signed upload URL for: ${destination}`);
+
+    // Save metadata to database if available
+    let fileMetadata = null;
+    if (FileMetadata) {
+      try {
+        fileMetadata = await FileMetadata.create({
+          fileName: fileName,
+          bucketName: process.env.GOOGLE_CLOUD_BUCKET_NAME,
+          filePath: destination,
+          fileSize: fileSize || null,
+          mimeType: fileType,
+          userId: req.user?.id || null,
+        });
+        console.log(`💾 Pre-saved metadata to database: ${fileMetadata.id}`);
+      } catch (dbError) {
+        console.error('⚠️ Failed to save metadata to database:', dbError);
+        // Continue anyway
+      }
+    }
+
+    res.json({
+      uploadUrl: signedUrl,
+      destination: destination,
+      fileId: fileMetadata?.id || null,
+      expiresIn: '1 hour',
+      maxSize: '4GB'
+    });
+
+  } catch (error) {
+    console.error('❌ Error generating upload URL:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate upload URL: ' + error.message 
+    });
+  }
+});
   try {
     console.log('📥 Upload request received');
     
