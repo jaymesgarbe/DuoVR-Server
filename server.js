@@ -1,6 +1,5 @@
 const express = require('express');
 const { Storage } = require('@google-cloud/storage');
-const { Sequelize } = require('sequelize');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -28,96 +27,90 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Initialize Google Cloud Storage
+// Initialize Google Cloud Storage WITHOUT key file - uses service account attached to Cloud Run
 const storage = new Storage({
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS, // Path to service account key
   projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
 });
 
-// Initialize Google Cloud SQL connection
-const sequelize = new Sequelize({
-  database: process.env.DB_NAME || 'duovr_db',
-  username: process.env.DB_USER || 'duovr_user',
-  password: process.env.DB_PASSWORD || 'secure_password',
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  dialect: 'postgres',
-  dialectOptions: {
-    socketPath: process.env.DB_SOCKET_PATH, // For Cloud SQL proxy
-  },
-  logging: console.log,
-});
+console.log('🔐 Using Cloud Run service account for authentication');
+
+// Initialize database only if DB_HOST is provided
+let sequelize = null;
+let FileMetadata = null;
+
+if (process.env.DB_HOST && process.env.DB_HOST.trim() !== '' && process.env.DB_HOST !== 'your-db-host') {
+  const { Sequelize } = require('sequelize');
+  
+  // Initialize Google Cloud SQL connection
+  sequelize = new Sequelize({
+    database: process.env.DB_NAME || 'duovr_db',
+    username: process.env.DB_USER || 'duovr_user',
+    password: process.env.DB_PASSWORD || 'secure_password',
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 5432,
+    dialect: 'postgres',
+    dialectOptions: {
+      socketPath: process.env.DB_SOCKET_PATH, // For Cloud SQL proxy
+    },
+    logging: console.log,
+  });
+
+  // Define the model
+  FileMetadata = sequelize.define('FileMetadata', {
+    id: {
+      type: Sequelize.UUID,
+      defaultValue: Sequelize.UUIDV4,
+      primaryKey: true,
+    },
+    fileName: {
+      type: Sequelize.STRING,
+      allowNull: false,
+    },
+    bucketName: {
+      type: Sequelize.STRING,
+      allowNull: false,
+    },
+    filePath: {
+      type: Sequelize.STRING,
+      allowNull: false,
+    },
+    fileSize: {
+      type: Sequelize.INTEGER,
+    },
+    mimeType: {
+      type: Sequelize.STRING,
+    },
+    uploadedAt: {
+      type: Sequelize.DATE,
+      defaultValue: Sequelize.NOW,
+    },
+    userId: {
+      type: Sequelize.STRING,
+    },
+  });
+}
 
 // Test database connection
 async function testDatabaseConnection() {
+  if (!sequelize) {
+    console.log('⚠️ No database configured');
+    return;
+  }
+  
   try {
     await sequelize.authenticate();
     console.log('✅ Database connection established successfully.');
   } catch (error) {
     console.error('❌ Unable to connect to the database:', error);
+    throw error;
   }
 }
-
-// Example model for files metadata
-const FileMetadata = sequelize.define('FileMetadata', {
-  id: {
-    type: Sequelize.UUID,
-    defaultValue: Sequelize.UUIDV4,
-    primaryKey: true,
-  },
-  fileName: {
-    type: Sequelize.STRING,
-    allowNull: false,
-  },
-  bucketName: {
-    type: Sequelize.STRING,
-    allowNull: false,
-  },
-  filePath: {
-    type: Sequelize.STRING,
-    allowNull: false,
-  },
-  fileSize: {
-    type: Sequelize.INTEGER,
-  },
-  mimeType: {
-    type: Sequelize.STRING,
-  },
-  uploadedAt: {
-    type: Sequelize.DATE,
-    defaultValue: Sequelize.NOW,
-  },
-  userId: {
-    type: Sequelize.STRING, // Assuming you have user management
-  },
-});
 
 // Cloud Storage helper functions
 class CloudStorageService {
   constructor(bucketName) {
     this.bucketName = bucketName;
     this.bucket = storage.bucket(bucketName);
-  }
-
-  async uploadFile(file, destination) {
-    try {
-      const blob = this.bucket.file(destination);
-      const blobStream = blob.createWriteStream({
-        metadata: {
-          contentType: file.mimetype,
-        },
-      });
-
-      return new Promise((resolve, reject) => {
-        blobStream.on('error', reject);
-        blobStream.on('finish', () => {
-          resolve(`File ${destination} uploaded successfully`);
-        });
-        blobStream.end(file.data); // Changed from file.buffer to file.data for express-fileupload
-      });
-    } catch (error) {
-      throw new Error(`Upload failed: ${error.message}`);
-    }
   }
 
   async generateSignedUrl(fileName, options = {}) {
@@ -135,29 +128,6 @@ class CloudStorageService {
       return signedUrl;
     } catch (error) {
       throw new Error(`Failed to generate signed URL: ${error.message}`);
-    }
-  }
-
-  async listFiles(prefix = '') {
-    try {
-      const [files] = await this.bucket.getFiles({ prefix });
-      return files.map(file => ({
-        name: file.name,
-        size: file.metadata.size,
-        updated: file.metadata.updated,
-        contentType: file.metadata.contentType,
-      }));
-    } catch (error) {
-      throw new Error(`Failed to list files: ${error.message}`);
-    }
-  }
-
-  async deleteFile(fileName) {
-    try {
-      await this.bucket.file(fileName).delete();
-      return `File ${fileName} deleted successfully`;
-    } catch (error) {
-      throw new Error(`Failed to delete file: ${error.message}`);
     }
   }
 
@@ -181,7 +151,21 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    version: '1.0.0' 
+    version: '1.0.0',
+    database: sequelize ? 'configured' : 'not configured',
+    environment: process.env.NODE_ENV || 'development',
+    authentication: 'using Cloud Run service account'
+  });
+});
+
+// Basic info endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'DuoVR Server is running!',
+    timestamp: new Date().toISOString(),
+    endpoints: ['/health', '/files/:fileName/signed-url'],
+    database: sequelize ? 'available' : 'not configured',
+    bucket: process.env.GOOGLE_CLOUD_BUCKET_NAME || 'not configured'
   });
 });
 
@@ -191,23 +175,23 @@ app.get('/files/:fileName/signed-url', async (req, res) => {
     const { fileName } = req.params;
     const { expiresInMinutes = 60, action = 'read' } = req.query;
 
+    console.log(`🔍 Checking if file exists: ${fileName} in bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME}`);
+
     // Check if file exists
     const exists = await storageService.fileExists(fileName);
     if (!exists) {
+      console.log(`❌ File not found: ${fileName}`);
       return res.status(404).json({ error: 'File not found' });
     }
+
+    console.log(`✅ File found: ${fileName}, generating signed URL`);
 
     const signedUrl = await storageService.generateSignedUrl(fileName, {
       action,
       expiresInMinutes: parseInt(expiresInMinutes),
     });
 
-    // Log access in database
-    const fileRecord = await FileMetadata.findOne({ where: { fileName } });
-    if (fileRecord) {
-      // You could add access logging here
-      console.log(`Signed URL generated for ${fileName} by user ${req.user?.id || 'anonymous'}`);
-    }
+    console.log(`✅ Signed URL generated successfully for: ${fileName}`);
 
     res.json({ 
       signedUrl,
@@ -216,91 +200,17 @@ app.get('/files/:fileName/signed-url', async (req, res) => {
       action
     });
   } catch (error) {
-    console.error('Error generating signed URL:', error);
+    console.error('❌ Error generating signed URL:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Upload file to bucket
-app.post('/files/upload', async (req, res) => {
-  try {
-    if (!req.files || !req.files.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const file = req.files.file;
-    const destination = `uploads/${Date.now()}-${file.name}`;
-
-    await storageService.uploadFile(file, destination);
-
-    // Save metadata to database
-    const fileMetadata = await FileMetadata.create({
-      fileName: file.name,
-      bucketName: process.env.GOOGLE_CLOUD_BUCKET_NAME,
-      filePath: destination,
-      fileSize: file.size,
-      mimeType: file.mimetype,
-      userId: req.user?.id || null,
-    });
-
-    res.json({
-      message: 'File uploaded successfully',
-      file: {
-        id: fileMetadata.id,
-        fileName: file.name,
-        path: destination,
-        size: file.size,
-        mimeType: file.mimetype,
-      }
-    });
-  } catch (error) {
-    console.error('Error uploading file:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// List files in bucket
-app.get('/files', async (req, res) => {
-  try {
-    const { prefix } = req.query;
-    const files = await storageService.listFiles(prefix);
-    
-    // Also get metadata from database
-    const dbFiles = await FileMetadata.findAll({
-      order: [['uploadedAt', 'DESC']],
-    });
-
-    res.json({
-      bucketFiles: files,
-      databaseFiles: dbFiles,
-    });
-  } catch (error) {
-    console.error('Error listing files:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete file
-app.delete('/files/:fileName', async (req, res) => {
-  try {
-    const { fileName } = req.params;
-
-    await storageService.deleteFile(fileName);
-    
-    // Remove from database
-    await FileMetadata.destroy({
-      where: { fileName }
-    });
-
-    res.json({ message: `File ${fileName} deleted successfully` });
-  } catch (error) {
-    console.error('Error deleting file:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Database operations
+// Database operations (only if database is configured)
 app.get('/db/files', async (req, res) => {
+  if (!FileMetadata) {
+    return res.status(503).json({ error: 'Database not configured' });
+  }
+  
   try {
     const files = await FileMetadata.findAll({
       order: [['uploadedAt', 'DESC']],
@@ -308,71 +218,6 @@ app.get('/db/files', async (req, res) => {
     res.json(files);
   } catch (error) {
     console.error('Error fetching files from database:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get file metadata by ID
-app.get('/db/files/:id', async (req, res) => {
-  try {
-    const file = await FileMetadata.findByPk(req.params.id);
-    if (!file) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-    res.json(file);
-  } catch (error) {
-    console.error('Error fetching file:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Bulk signed URL generation
-app.post('/files/bulk-signed-urls', async (req, res) => {
-  try {
-    const { fileNames, expiresInMinutes = 60, action = 'read' } = req.body;
-
-    if (!Array.isArray(fileNames)) {
-      return res.status(400).json({ error: 'fileNames must be an array' });
-    }
-
-    const results = await Promise.allSettled(
-      fileNames.map(async (fileName) => {
-        const exists = await storageService.fileExists(fileName);
-        if (!exists) {
-          throw new Error(`File ${fileName} not found`);
-        }
-        
-        const signedUrl = await storageService.generateSignedUrl(fileName, {
-          action,
-          expiresInMinutes: parseInt(expiresInMinutes),
-        });
-        
-        return { fileName, signedUrl };
-      })
-    );
-
-    const successful = results
-      .filter(result => result.status === 'fulfilled')
-      .map(result => result.value);
-      
-    const failed = results
-      .filter(result => result.status === 'rejected')
-      .map((result, index) => ({
-        fileName: fileNames[index],
-        error: result.reason.message
-      }));
-
-    res.json({
-      successful,
-      failed,
-      summary: {
-        total: fileNames.length,
-        successful: successful.length,
-        failed: failed.length
-      }
-    });
-  } catch (error) {
-    console.error('Error generating bulk signed URLs:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -394,26 +239,27 @@ app.use((req, res) => {
 // Start server
 async function startServer() {
   try {
-    // Only try database connection if DB_HOST is provided
-    if (process.env.DB_HOST && process.env.DB_HOST !== '') {
+    // Only try database connection if properly configured
+    if (sequelize) {
       console.log('🔍 Testing database connection...');
       await testDatabaseConnection();
       await sequelize.sync({ alter: true });
       console.log('📊 Database models synchronized');
     } else {
-      console.log('⚠️ No database configured, skipping database setup');
+      console.log('⚠️ No database configured, running without database features');
     }
     
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 DuoVR Server running on port ${PORT}`);
       console.log(`📱 Health check: http://localhost:${PORT}/health`);
+      console.log(`🪣 Using bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME || 'not configured'}`);
     });
   } catch (error) {
     console.error('❌ Database connection failed, but starting server anyway:', error.message);
     
     // Start server without database
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 DuoVR Server running on port ${PORT} (without database)`);
+      console.log(`🚀 DuoVR Server running on port ${PORT} (database connection failed)`);
       console.log(`📱 Health check: http://localhost:${PORT}/health`);
     });
   }
@@ -424,12 +270,12 @@ startServer();
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🛑 Received SIGINT, shutting down gracefully...');
-  await sequelize.close();
+  if (sequelize) await sequelize.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
-  await sequelize.close();
+  if (sequelize) await sequelize.close();
   process.exit(0);
 });
