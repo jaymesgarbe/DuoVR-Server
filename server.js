@@ -11,7 +11,19 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(helmet());
-app.use(cors());
+
+// CORS configuration to allow GitHub Pages
+app.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:8080',
+    'https://jaymesgarbe.github.io',
+    'file://' // Allow local file access
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
