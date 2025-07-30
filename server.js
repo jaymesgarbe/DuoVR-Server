@@ -376,8 +376,84 @@ app.post('/files/generate-upload-url', async (req, res) => {
     const destination = generateUniqueFileName(file.name);
     console.log(`🎯 Upload destination: ${destination}`);
 
+// Original upload endpoint (kept for compatibility, but fixed)
+app.post('/files/upload', async (req, res) => {
+  try {
+    console.log('📥 Upload request received');
+    
+    if (!req.files || !req.files.file) {
+      console.log('❌ No file uploaded');
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const file = req.files.file;
+    console.log(`📁 File details: ${file.name}, ${file.mimetype}, ${file.size} bytes`);
+
+    // Validate file type
+    if (!isValidVideoFile(file)) {
+      console.log(`❌ Invalid file type: ${file.mimetype}`);
+      return res.status(400).json({ 
+        error: 'Invalid file type. Please upload video files only (MP4, MOV, AVI)' 
+      });
+    }
+
+    // Check file size (max 4GB for this endpoint)
+    const maxSize = 4 * 1024 * 1024 * 1024; // 4GB
+    if (file.size > maxSize) {
+      console.log(`❌ File too large: ${file.size} bytes`);
+      return res.status(400).json({ 
+        error: 'File too large. Maximum size is 4GB' 
+      });
+    }
+
+    // Generate unique file name
+    const destination = generateUniqueFileName(file.name);
+    console.log(`🎯 Upload destination: ${destination}`);
+
     // Upload to Google Cloud Storage
     await storageService.uploadFile(file, destination);
+
+    // Save metadata to database if available
+    let fileMetadata = null;
+    if (FileMetadata) {
+      try {
+        fileMetadata = await FileMetadata.create({
+          fileName: file.name,
+          bucketName: process.env.GOOGLE_CLOUD_BUCKET_NAME,
+          filePath: destination,
+          fileSize: file.size,
+          mimeType: file.mimetype,
+          userId: req.user?.id || null,
+        });
+        console.log(`💾 Metadata saved to database: ${fileMetadata.id}`);
+      } catch (dbError) {
+        console.error('⚠️ Failed to save metadata to database:', dbError);
+        // Continue anyway - file upload succeeded
+      }
+    }
+
+    res.json({
+      message: 'File uploaded successfully',
+      file: {
+        id: fileMetadata?.id || null,
+        fileName: file.name,
+        path: destination,
+        size: file.size,
+        mimeType: file.mimetype,
+        bucketUrl: `gs://${process.env.GOOGLE_CLOUD_BUCKET_NAME}/${destination}`,
+        uploadedAt: new Date().toISOString()
+      }
+    });
+
+    console.log(`✅ Upload completed successfully: ${file.name}`);
+
+  } catch (error) {
+    console.error('❌ Error uploading file:', error);
+    res.status(500).json({ 
+      error: 'Upload failed: ' + error.message 
+    });
+  }
+});
 
     // Save metadata to database if available
     let fileMetadata = null;
