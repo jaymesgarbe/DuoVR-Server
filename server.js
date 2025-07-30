@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(helmet());
 
-// CORS configuration to allow GitHub Pages
+// CORS configuration to allow GitHub Pages and local development
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -24,18 +24,19 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // File upload middleware with large limits for video files
 app.use(fileUpload({
-  limits: { fileSize: 32 * 1024 * 1024 * 1024 }, // 32GB max file size for videos
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 }, // 4GB max file size for videos
   useTempFiles: true,
   tempFileDir: '/tmp/',
   createParentPath: true
 }));
 
-// Rate limiting - more lenient for video uploads
+// Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 50 // limit each IP to 50 requests per windowMs
@@ -65,7 +66,7 @@ if (process.env.DB_HOST && process.env.DB_HOST.trim() !== '' && process.env.DB_H
     port: process.env.DB_PORT || 5432,
     dialect: 'postgres',
     dialectOptions: {
-      socketPath: process.env.DB_SOCKET_PATH, // For Cloud SQL proxy
+      socketPath: process.env.DB_SOCKET_PATH,
     },
     logging: console.log,
   });
@@ -137,7 +138,7 @@ class CloudStorageService {
         metadata: {
           contentType: file.mimetype,
         },
-        resumable: true, // Enable resumable uploads for large files
+        resumable: true,
       });
 
       return new Promise((resolve, reject) => {
@@ -149,7 +150,6 @@ class CloudStorageService {
         blobStream.on('finish', async () => {
           console.log(`✅ Upload completed: ${destination}`);
           
-          // Make the file publicly readable (optional)
           try {
             await blob.makePublic();
             console.log(`🌐 Made file public: ${destination}`);
@@ -175,7 +175,7 @@ class CloudStorageService {
       const signedUrlOptions = {
         version: 'v4',
         action: options.action || 'read',
-        expires: Date.now() + (options.expiresInMinutes || 60) * 60 * 1000, // Default 1 hour
+        expires: Date.now() + (options.expiresInMinutes || 60) * 60 * 1000,
         ...options,
       };
 
@@ -259,7 +259,7 @@ app.get('/', (req, res) => {
     endpoints: [
       '/health',
       '/files/:fileName/signed-url',
-      '/files/upload',
+      '/files/generate-upload-url',
       '/files'
     ],
     database: sequelize ? 'available' : 'not configured',
@@ -325,7 +325,6 @@ app.post('/files/generate-upload-url', async (req, res) => {
         console.log(`💾 Pre-saved metadata to database: ${fileMetadata.id}`);
       } catch (dbError) {
         console.error('⚠️ Failed to save metadata to database:', dbError);
-        // Continue anyway
       }
     }
 
@@ -344,158 +343,6 @@ app.post('/files/generate-upload-url', async (req, res) => {
     });
   }
 });
-  try {
-    console.log('📥 Upload request received');
-    
-    if (!req.files || !req.files.file) {
-      console.log('❌ No file uploaded');
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const file = req.files.file;
-    console.log(`📁 File details: ${file.name}, ${file.mimetype}, ${file.size} bytes`);
-
-    // Validate file type
-    if (!isValidVideoFile(file)) {
-      console.log(`❌ Invalid file type: ${file.mimetype}`);
-      return res.status(400).json({ 
-        error: 'Invalid file type. Please upload video files only (MP4, MOV, AVI)' 
-      });
-    }
-
-    // Check file size (max 32GB)
-    const maxSize = 32 * 1024 * 1024 * 1024; // 32GB
-    if (file.size > maxSize) {
-      console.log(`❌ File too large: ${file.size} bytes`);
-      return res.status(400).json({ 
-        error: 'File too large. Maximum size is 32GB' 
-      });
-    }
-
-    // Generate unique file name
-    const destination = generateUniqueFileName(file.name);
-    console.log(`🎯 Upload destination: ${destination}`);
-
-// Original upload endpoint (kept for compatibility, but fixed)
-app.post('/files/upload', async (req, res) => {
-  try {
-    console.log('📥 Upload request received');
-    
-    if (!req.files || !req.files.file) {
-      console.log('❌ No file uploaded');
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const file = req.files.file;
-    console.log(`📁 File details: ${file.name}, ${file.mimetype}, ${file.size} bytes`);
-
-    // Validate file type
-    if (!isValidVideoFile(file)) {
-      console.log(`❌ Invalid file type: ${file.mimetype}`);
-      return res.status(400).json({ 
-        error: 'Invalid file type. Please upload video files only (MP4, MOV, AVI)' 
-      });
-    }
-
-    // Check file size (max 4GB for this endpoint)
-    const maxSize = 4 * 1024 * 1024 * 1024; // 4GB
-    if (file.size > maxSize) {
-      console.log(`❌ File too large: ${file.size} bytes`);
-      return res.status(400).json({ 
-        error: 'File too large. Maximum size is 4GB' 
-      });
-    }
-
-    // Generate unique file name
-    const destination = generateUniqueFileName(file.name);
-    console.log(`🎯 Upload destination: ${destination}`);
-
-    // Upload to Google Cloud Storage
-    await storageService.uploadFile(file, destination);
-
-    // Save metadata to database if available
-    let fileMetadata = null;
-    if (FileMetadata) {
-      try {
-        fileMetadata = await FileMetadata.create({
-          fileName: file.name,
-          bucketName: process.env.GOOGLE_CLOUD_BUCKET_NAME,
-          filePath: destination,
-          fileSize: file.size,
-          mimeType: file.mimetype,
-          userId: req.user?.id || null,
-        });
-        console.log(`💾 Metadata saved to database: ${fileMetadata.id}`);
-      } catch (dbError) {
-        console.error('⚠️ Failed to save metadata to database:', dbError);
-        // Continue anyway - file upload succeeded
-      }
-    }
-
-    res.json({
-      message: 'File uploaded successfully',
-      file: {
-        id: fileMetadata?.id || null,
-        fileName: file.name,
-        path: destination,
-        size: file.size,
-        mimeType: file.mimetype,
-        bucketUrl: `gs://${process.env.GOOGLE_CLOUD_BUCKET_NAME}/${destination}`,
-        uploadedAt: new Date().toISOString()
-      }
-    });
-
-    console.log(`✅ Upload completed successfully: ${file.name}`);
-
-  } catch (error) {
-    console.error('❌ Error uploading file:', error);
-    res.status(500).json({ 
-      error: 'Upload failed: ' + error.message 
-    });
-  }
-});
-
-    // Save metadata to database if available
-    let fileMetadata = null;
-    if (FileMetadata) {
-      try {
-        fileMetadata = await FileMetadata.create({
-          fileName: file.name,
-          bucketName: process.env.GOOGLE_CLOUD_BUCKET_NAME,
-          filePath: destination,
-          fileSize: file.size,
-          mimeType: file.mimetype,
-          userId: req.user?.id || null,
-        });
-        console.log(`💾 Metadata saved to database: ${fileMetadata.id}`);
-      } catch (dbError) {
-        console.error('⚠️ Failed to save metadata to database:', dbError);
-        // Continue anyway - file upload succeeded
-      }
-    }
-
-    res.json({
-      message: 'File uploaded successfully',
-      file: {
-        id: fileMetadata?.id || null,
-        fileName: file.name,
-        path: destination,
-        size: file.size,
-        mimeType: file.mimetype,
-        bucketUrl: `gs://${process.env.GOOGLE_CLOUD_BUCKET_NAME}/${destination}`,
-        uploadedAt: new Date().toISOString()
-      }
-    });
-
-    console.log(`✅ Upload completed successfully: ${file.name}`);
-
-  } catch (error) {
-    console.error('❌ Error uploading file:', error);
-    res.status(500).json({ 
-      error: 'Upload failed: ' + error.message 
-    });
-  }
-});
 
 // Get signed URL for file access
 app.get('/files/:fileName/signed-url', async (req, res) => {
@@ -505,7 +352,6 @@ app.get('/files/:fileName/signed-url', async (req, res) => {
 
     console.log(`🔍 Checking if file exists: ${fileName} in bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME}`);
 
-    // Check if file exists
     const exists = await storageService.fileExists(fileName);
     if (!exists) {
       console.log(`❌ File not found: ${fileName}`);
@@ -539,7 +385,6 @@ app.get('/files', async (req, res) => {
     const { prefix } = req.query;
     const files = await storageService.listFiles(prefix);
     
-    // Also get metadata from database if available
     let dbFiles = [];
     if (FileMetadata) {
       try {
@@ -562,31 +407,6 @@ app.get('/files', async (req, res) => {
   }
 });
 
-// Delete file
-app.delete('/files/:fileName', async (req, res) => {
-  try {
-    const { fileName } = req.params;
-
-    await storageService.deleteFile(fileName);
-    
-    // Remove from database if available
-    if (FileMetadata) {
-      try {
-        await FileMetadata.destroy({
-          where: { fileName }
-        });
-      } catch (dbError) {
-        console.error('⚠️ Failed to delete from database:', dbError);
-      }
-    }
-
-    res.json({ message: `File ${fileName} deleted successfully` });
-  } catch (error) {
-    console.error('Error deleting file:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Database operations (only if database is configured)
 app.get('/db/files', async (req, res) => {
   if (!FileMetadata) {
@@ -600,75 +420,6 @@ app.get('/db/files', async (req, res) => {
     res.json(files);
   } catch (error) {
     console.error('Error fetching files from database:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get file metadata by ID
-app.get('/db/files/:id', async (req, res) => {
-  if (!FileMetadata) {
-    return res.status(503).json({ error: 'Database not configured' });
-  }
-  
-  try {
-    const file = await FileMetadata.findByPk(req.params.id);
-    if (!file) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-    res.json(file);
-  } catch (error) {
-    console.error('Error fetching file:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Bulk signed URL generation
-app.post('/files/bulk-signed-urls', async (req, res) => {
-  try {
-    const { fileNames, expiresInMinutes = 60, action = 'read' } = req.body;
-
-    if (!Array.isArray(fileNames)) {
-      return res.status(400).json({ error: 'fileNames must be an array' });
-    }
-
-    const results = await Promise.allSettled(
-      fileNames.map(async (fileName) => {
-        const exists = await storageService.fileExists(fileName);
-        if (!exists) {
-          throw new Error(`File ${fileName} not found`);
-        }
-        
-        const signedUrl = await storageService.generateSignedUrl(fileName, {
-          action,
-          expiresInMinutes: parseInt(expiresInMinutes),
-        });
-        
-        return { fileName, signedUrl };
-      })
-    );
-
-    const successful = results
-      .filter(result => result.status === 'fulfilled')
-      .map(result => result.value);
-      
-    const failed = results
-      .filter(result => result.status === 'rejected')
-      .map((result, index) => ({
-        fileName: fileNames[index],
-        error: result.reason.message
-      }));
-
-    res.json({
-      successful,
-      failed,
-      summary: {
-        total: fileNames.length,
-        successful: successful.length,
-        failed: failed.length
-      }
-    });
-  } catch (error) {
-    console.error('Error generating bulk signed URLs:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -690,7 +441,6 @@ app.use((req, res) => {
 // Start server
 async function startServer() {
   try {
-    // Only try database connection if properly configured
     if (sequelize) {
       console.log('🔍 Testing database connection...');
       await testDatabaseConnection();
@@ -704,17 +454,16 @@ async function startServer() {
       console.log(`🚀 DuoVR Server running on port ${PORT}`);
       console.log(`📱 Health check: http://localhost:${PORT}/health`);
       console.log(`🪣 Using bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME || 'not configured'}`);
-      console.log(`📏 Max file size: 32GB`);
+      console.log(`📏 Max file size: 4GB`);
     });
   } catch (error) {
     console.error('❌ Database connection failed, but starting server anyway:', error.message);
     
-    // Start server without database
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 DuoVR Server running on port ${PORT} (database connection failed)`);
       console.log(`📱 Health check: http://localhost:${PORT}/health`);
       console.log(`🪣 Using bucket: ${process.env.GOOGLE_CLOUD_BUCKET_NAME || 'not configured'}`);
-      console.log(`📏 Max file size: 32GB`);
+      console.log(`📏 Max file size: 4GB`);
     });
   }
 }
