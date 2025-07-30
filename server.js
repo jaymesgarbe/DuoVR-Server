@@ -303,9 +303,7 @@ app.post('/files/generate-upload-url', async (req, res) => {
       action: 'write',
       expires: Date.now() + 60 * 60 * 1000, // 1 hour
       contentType: fileType,
-      extensionHeaders: {
-        'x-goog-content-length-range': '0,4294967296' // 0 to 4GB
-      }
+      // Remove the content-length-range header as it can cause issues
     });
 
     console.log(`✅ Generated signed upload URL for: ${destination}`);
