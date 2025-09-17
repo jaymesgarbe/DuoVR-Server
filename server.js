@@ -666,7 +666,7 @@ class SessionService {
 }
 
 // Initialize storage service
-const storageService = new CloudStorageService(process.env.GOOGLE_CLOUD_BUCKET_NAME || 'default-bucket');
+const storageService = new CloudStorageService(process.env.GOOGLE_CLOUD_BUCKET_NAME || 'duovr-files-bucket');
 
 // Utility functions
 function isValidVideoFile(file) {

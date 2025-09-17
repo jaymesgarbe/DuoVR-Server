@@ -138,12 +138,12 @@ test_storage_bucket_check() {
     log_info "Checking if storage bucket exists..."
     
     if command -v gsutil &> /dev/null; then
-        if gsutil ls -b gs://jr_testing >/dev/null 2>&1; then
-            log_info "Storage bucket 'jr_testing' exists"
+        if gsutil ls -b gs://duovr-files-bucket >/dev/null 2>&1; then
+            log_info "Storage bucket 'duovr-files-bucket' exists"
             return 0
         else
-            log_warning "Storage bucket 'jr_testing' does not exist"
-            log_info "Create it with: gsutil mb gs://jr_testing"
+            log_warning "Storage bucket 'duovr-files-bucket' does not exist"
+            log_info "Create it with: gsutil mb gs://duovr-files-bucket"
             return 1
         fi
     else
@@ -375,7 +375,7 @@ main() {
         echo ""
         echo "Common fixes:"
         echo "- For upload URL issues: Run ./fix-signblob-permission.sh"
-        echo "- For bucket issues: Create bucket with 'gsutil mb gs://jr_testing'"
+        echo "- For bucket issues: Create bucket with 'gsutil mb gs://duovr-files-bucket'"
         echo "- For permissions: Check service account IAM roles"
         echo "- Server may still be starting up (wait 1-2 minutes)"
         

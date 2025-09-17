@@ -7,7 +7,7 @@ set -e
 # Configuration
 PROJECT_ID="plated-envoy-463521-d0"
 ACCOUNT="jr@duovr.com"
-BUCKET_NAME="jr_testing"
+BUCKET_NAME="duovr-files-bucket"
 REGION="us-central1"
 
 # Colors for output

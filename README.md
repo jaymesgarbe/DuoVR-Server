@@ -220,7 +220,7 @@ Your `.env` file should contain:
 ```bash
 # Google Cloud Configuration
 GOOGLE_CLOUD_PROJECT_ID=plated-envoy-463521-d0
-GOOGLE_CLOUD_BUCKET_NAME=jr_testing
+GOOGLE_CLOUD_BUCKET_NAME=duovr-files-bucket
 
 # Database (Optional - leave empty to run without database)
 DB_HOST=
@@ -322,10 +322,10 @@ The deployment script automatically handles Cloud Build problems with multiple f
 #### Storage Bucket Issues
 ```bash
 # Check if bucket exists
-gsutil ls gs://jr_testing
+gsutil ls gs://duovr-files-bucket
 
 # Create bucket if missing
-gsutil mb gs://jr_testing
+gsutil mb gs://duovr-files-bucket
 ```
 
 #### Permission Errors
@@ -344,7 +344,7 @@ gcloud run services describe duovr-server --platform managed --region us-west1
 gcloud logs read /google.com/cloud/run/job-name=duovr-server --limit=20
 
 # Test storage access
-gsutil ls gs://jr_testing
+gsutil ls gs://duovr-files-bucket
 
 # Verify service account permissions
 gcloud projects get-iam-policy plated-envoy-463521-d0 \
@@ -409,7 +409,7 @@ Your DuoVR server is ready for production when:
 - ✅ All 11 tests pass in the comprehensive test suite
 - ✅ Unity can successfully load and stream videos
 - ✅ Upload URL generation works (signBlob permissions configured)
-- ✅ Storage bucket `jr_testing` exists and is accessible
+- ✅ Storage bucket `duovr-files-bucket` exists and is accessible
 - ✅ Cloud Run service is healthy and responding
 - ✅ Service account has proper IAM roles
 

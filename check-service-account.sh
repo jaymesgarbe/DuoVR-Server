@@ -43,7 +43,7 @@ for role in "${REQUIRED_ROLES[@]}"; do
 done
 
 # Check bucket access
-BUCKET_NAME="jr_testing"
+BUCKET_NAME="duovr-files-bucket"
 echo "🪣 Checking bucket access..."
 
 if gsutil ls gs://$BUCKET_NAME >/dev/null 2>&1; then
