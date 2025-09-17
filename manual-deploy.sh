@@ -1,189 +1,191 @@
 #!/bin/bash
 
-# DuoVR Server Enhanced Deployment Script
+# DuoVR Server - Main Deployment Script
+# Handles Cloud Build issues with multiple fallback methods
 set -e
 
-# Configuration - UPDATE THESE VALUES
 PROJECT_ID="plated-envoy-463521-d0"
 SERVICE_NAME="duovr-server"
 REGION="us-west1"
-SERVICE_ACCOUNT="signedurl-getter@plated-envoy-463521-d0.iam.gserviceaccount.com"
-BUCKET_NAME="duovr-files-bucket"
+SERVICE_ACCOUNT="signedurl-getter@${PROJECT_ID}.iam.gserviceaccount.com"
+IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
+BUCKET_NAME="jr_testing"
 
-# Enhanced resource allocation for video processing
-MEMORY="4Gi"
-CPU="2"
-MAX_INSTANCES="10"
-MIN_INSTANCES="0"
-TIMEOUT="3600"  # 1 hour timeout for video processing
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-echo "🚀 Starting enhanced deployment of DuoVR Server v2.0..."
+log_info() { echo -e "${BLUE}ℹ️  $1${NC}"; }
+log_success() { echo -e "${GREEN}✅ $1${NC}"; }
+log_error() { echo -e "${RED}❌ $1${NC}"; }
+log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
-# Get current project if not specified
-if [ -z "$PROJECT_ID" ]; then
-    PROJECT_ID=$(gcloud config get-value project)
-    if [ -z "$PROJECT_ID" ]; then
-        echo "❌ No project ID specified and no default project set."
-        echo "Please run: gcloud config set project YOUR_PROJECT_ID"
-        echo "Or set PROJECT_ID in this script."
-        exit 1
-    fi
-fi
+echo "🚀 DuoVR Server - Production Deployment"
+echo "======================================="
+echo ""
+echo "Project: $PROJECT_ID"
+echo "Service: $SERVICE_NAME"
+echo "Region: $REGION"
+echo "Service Account: $SERVICE_ACCOUNT"
+echo "Image: $IMAGE_NAME"
+echo ""
 
-IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}:v2.0"
+# Set project
+gcloud config set project $PROJECT_ID
 
-echo "📋 Using project: $PROJECT_ID"
-echo "📋 Using service account: $SERVICE_ACCOUNT"
-echo "📋 Using bucket: $BUCKET_NAME"
-echo "📋 Using account: $(gcloud config get-value account)"
-
-# Verify project exists and is accessible
-echo "🔍 Verifying project access..."
-if ! gcloud projects describe $PROJECT_ID >/dev/null 2>&1; then
-    echo "❌ Cannot access project: $PROJECT_ID"
-    echo "Available projects:"
-    gcloud projects list
+# Verify service account exists
+log_info "Verifying service account..."
+if gcloud iam service-accounts describe $SERVICE_ACCOUNT --project=$PROJECT_ID >/dev/null 2>&1; then
+    log_success "Service account verified: $SERVICE_ACCOUNT"
+else
+    log_error "Service account not found: $SERVICE_ACCOUNT"
+    echo ""
+    echo "Please run the setup script first:"
+    echo "./scripts/fix-all-deployment-issues.sh"
     exit 1
 fi
 
-echo "✅ Project access verified"
+# Ensure service account has required permissions
+log_info "Ensuring service account has build permissions..."
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:$SERVICE_ACCOUNT" \
+    --role="roles/cloudbuild.builds.builder" \
+    --quiet 2>/dev/null || true
 
-# Check if required files exist
-echo "🔍 Checking required files..."
-REQUIRED_FILES=("Dockerfile" "server.js" "package.json")
-for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "$file" ]; then
-        echo "❌ Required file not found: $file"
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:$SERVICE_ACCOUNT" \
+    --role="roles/storage.admin" \
+    --quiet 2>/dev/null || true
+
+# Build the Docker image using multiple methods
+BUILD_SUCCESS=false
+
+# Method 1: Standard Cloud Build
+log_info "METHOD 1: Standard Cloud Build"
+if gcloud builds submit --tag $IMAGE_NAME --project=$PROJECT_ID --timeout=20m 2>/dev/null; then
+    log_success "Standard Cloud Build successful!"
+    BUILD_SUCCESS=true
+else
+    log_warning "Standard Cloud Build failed, trying alternative method..."
+fi
+
+# Method 2: Cloud Build with custom configuration
+if [ "$BUILD_SUCCESS" = false ]; then
+    log_info "METHOD 2: Cloud Build with custom configuration"
+    
+    cat > /tmp/cloudbuild.yaml << EOF
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', '$IMAGE_NAME', '.']
+images:
+- '$IMAGE_NAME'
+serviceAccount: 'projects/$PROJECT_ID/serviceAccounts/$SERVICE_ACCOUNT'
+timeout: '1200s'
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+EOF
+    
+    if gcloud builds submit --config=/tmp/cloudbuild.yaml --project=$PROJECT_ID 2>/dev/null; then
+        log_success "Custom Cloud Build configuration successful!"
+        BUILD_SUCCESS=true
+    else
+        log_warning "Custom Cloud Build failed, trying direct Docker method..."
+    fi
+    
+    rm -f /tmp/cloudbuild.yaml
+fi
+
+# Method 3: Direct Docker build and push
+if [ "$BUILD_SUCCESS" = false ]; then
+    log_info "METHOD 3: Direct Docker build and push"
+    
+    # Check if Docker is available
+    if ! command -v docker &> /dev/null; then
+        log_error "Docker not found. Please install Docker or fix Cloud Build issues."
         exit 1
     fi
-done
-
-echo "✅ All required files found"
-
-# Set the project
-gcloud config set project $PROJECT_ID
-
-# Enable required APIs
-echo "📡 Enabling required APIs..."
-gcloud services enable cloudbuild.googleapis.com \
-    run.googleapis.com \
-    containerregistry.googleapis.com \
-    storage.googleapis.com \
-    sqladmin.googleapis.com
-
-echo "✅ APIs enabled"
-
-# Create .gcloudignore if it doesn't exist
-if [ ! -f ".gcloudignore" ]; then
-    echo "📝 Creating .gcloudignore..."
-    cat > .gcloudignore << 'EOF'
-.git/
-.github/
-node_modules/
-npm-debug.log
-.env
-.env.*
-secrets/
-*.log
-.DS_Store
-README.md
-docs/
-test/
-.vscode/
-Thumbs.db
-EOF
-fi
-
-# Build and submit to Cloud Build
-echo "🔨 Building Docker image with video processing support..."
-gcloud builds submit --tag $IMAGE_NAME --timeout=20m
-
-echo "✅ Docker image built successfully"
-
-# Check if bucket exists, create if it doesn't
-echo "🪣 Checking if storage bucket exists..."
-if ! gsutil ls -b gs://$BUCKET_NAME >/dev/null 2>&1; then
-    echo "📦 Creating storage bucket: $BUCKET_NAME"
-    gsutil mb -p $PROJECT_ID -c STANDARD -l $REGION gs://$BUCKET_NAME
     
-    # Set bucket permissions for public access to videos
-    gsutil iam ch allUsers:objectViewer gs://$BUCKET_NAME
-    echo "✅ Storage bucket created and configured"
-else
-    echo "✅ Storage bucket already exists"
+    # Configure Docker authentication
+    gcloud auth configure-docker gcr.io --quiet
+    
+    # Build locally
+    log_info "Building Docker image locally..."
+    docker build -t $IMAGE_NAME .
+    
+    # Push to registry
+    log_info "Pushing to Google Container Registry..."
+    docker push $IMAGE_NAME
+    
+    log_success "Direct Docker build and push successful!"
+    BUILD_SUCCESS=true
 fi
 
-# Deploy to Cloud Run with enhanced configuration
-echo "🚀 Deploying to Cloud Run with enhanced video processing capabilities..."
+if [ "$BUILD_SUCCESS" = false ]; then
+    log_error "All build methods failed!"
+    echo ""
+    echo "Troubleshooting steps:"
+    echo "1. Run: ./scripts/fix-all-deployment-issues.sh"
+    echo "2. Check Docker installation: docker --version"
+    echo "3. Check Cloud Build permissions"
+    exit 1
+fi
+
+# Deploy to Cloud Run
+log_info "Deploying to Cloud Run with production configuration..."
+
 gcloud run deploy $SERVICE_NAME \
     --image $IMAGE_NAME \
     --platform managed \
     --region $REGION \
     --allow-unauthenticated \
     --port 3000 \
-    --memory $MEMORY \
-    --cpu $CPU \
-    --min-instances $MIN_INSTANCES \
-    --max-instances $MAX_INSTANCES \
+    --memory 4Gi \
+    --cpu 2 \
+    --min-instances 0 \
+    --max-instances 10 \
     --service-account=$SERVICE_ACCOUNT \
-    --timeout $TIMEOUT \
+    --timeout 3600 \
     --concurrency 10 \
     --set-env-vars "NODE_ENV=production,GOOGLE_CLOUD_PROJECT_ID=$PROJECT_ID,GOOGLE_CLOUD_BUCKET_NAME=$BUCKET_NAME,ENABLE_TRANSCODING=true,ENABLE_THUMBNAILS=true,ENABLE_ANALYTICS=true,MAX_FILE_SIZE=8589934592,FFMPEG_THREADS=2,RATE_LIMIT_MAX_REQUESTS=100" \
-    --add-cloudsql-instances $PROJECT_ID:$REGION:duovr-db \
-    --quiet
+    --project=$PROJECT_ID
 
-echo "✅ Cloud Run deployment completed"
-
-# Get the service URL
-SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --platform managed --region $REGION --format 'value(status.url)')
+# Get service URL
+SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \
+    --platform managed \
+    --region $REGION \
+    --project=$PROJECT_ID \
+    --format 'value(status.url)')
 
 echo ""
-echo "🎉 Enhanced DuoVR Server v2.0 deployment completed successfully!"
+echo "🎉 Deployment Complete!"
+echo "======================"
 echo ""
-echo "📊 Deployment Summary:"
-echo "  🌐 Service URL: $SERVICE_URL"
-echo "  🔍 Health check: $SERVICE_URL/health"
-echo "  📱 API Documentation: $SERVICE_URL/"
-echo "  💾 Memory: $MEMORY"
-echo "  ⚡ CPU: $CPU"
-echo "  🪣 Storage bucket: gs://$BUCKET_NAME"
-echo "  ⏱️  Timeout: ${TIMEOUT}s"
+log_success "Image built and deployed successfully"
+log_success "Service account: $SERVICE_ACCOUNT"
+log_success "Service URL: $SERVICE_URL"
 echo ""
-echo "🎬 New Features Available:"
-echo "  ✅ Video streaming with range support"
-echo "  ✅ Automatic transcoding to multiple qualities"
-echo "  ✅ Thumbnail generation"
-echo "  ✅ Advanced analytics and monitoring"
-echo "  ✅ Enhanced 360° video detection"
-echo "  ✅ Session management"
+echo "🧪 Quick Test:"
+echo "curl $SERVICE_URL/health"
 echo ""
-echo "🔗 Key Endpoints:"
-echo "  📹 Video streaming: $SERVICE_URL/files/{fileName}/stream"
-echo "  🎞️  Video metadata: $SERVICE_URL/files/{fileName}/metadata"
-echo "  🎬 Video transcoding: $SERVICE_URL/files/{fileName}/transcode"
-echo "  🖼️  Thumbnail generation: $SERVICE_URL/files/{fileName}/thumbnail"
-echo "  📊 Analytics: $SERVICE_URL/analytics/dashboard"
+echo "📝 Next Steps:"
+echo "1. Test health endpoint above"
+echo "2. Verify storage bucket exists: gs://$BUCKET_NAME"  
+echo "3. Update Unity URLLoader.cs with: $SERVICE_URL"
+echo "4. Run comprehensive tests: ./scripts/test-duovr-server.sh"
 echo ""
 
-# Test the health endpoint
-echo "🏥 Testing health endpoint..."
-echo "⏳ Waiting for service to be ready..."
-sleep 10
-
-HEALTH_RESPONSE=$(curl -s "$SERVICE_URL/health" || echo "Health check failed")
-if echo "$HEALTH_RESPONSE" | grep -q "healthy"; then
-    echo "✅ Health check passed!"
-    echo "📋 Service features:"
-    echo "$HEALTH_RESPONSE" | jq '.features' 2>/dev/null || echo "  (Could not parse features)"
+# Optional: Quick health check
+log_info "Running quick health check..."
+if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+    log_success "Health check passed! Service is ready."
 else
-    echo "⚠️  Health check response: $HEALTH_RESPONSE"
+    log_warning "Health check failed - service may still be starting up"
+    echo "Wait 1-2 minutes and try: curl $SERVICE_URL/health"
 fi
 
 echo ""
-echo "📚 Next Steps:"
-echo "  1. Update your Unity URLLoader.cs script with the new service URL"
-echo "  2. Test video upload using: curl -X POST -F 'video=@your-video.mp4' $SERVICE_URL/files/upload"
-echo "  3. Monitor analytics at: $SERVICE_URL/analytics/dashboard"
-echo "  4. Check logs: gcloud logs tail /google.com/cloud/run/job-name=$SERVICE_NAME --limit=50"
-echo ""
-echo "🎊 Deployment finished successfully!"
+log_success "Deployment script completed successfully!"
